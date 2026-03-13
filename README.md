@@ -1,22 +1,33 @@
-# OrbStack + Playwright/CDP: ERR_ADDRESS_UNREACHABLE
+# OrbStack + Playwright/CDP: ERR_ADDRESS_UNREACHABLE (from ad-hoc signed terminals)
 
-Minimal reproduction showing that Playwright (and any CDP-based automation) cannot reach OrbStack container domains on macOS, even though the same Chrome binary can reach them via the address bar.
+Minimal reproduction showing that Playwright (and any CDP-based automation) cannot reach OrbStack container domains on macOS **when run from an ad-hoc signed parent process** (e.g. Homebrew-installed tmux).
 
 ## The Bug
 
-OrbStack routes container IP traffic through macOS **Network.framework**. Chrome's DevTools Protocol (CDP) `Page.navigate` uses Chrome's internal network service which goes through **BSD sockets**, bypassing Network.framework entirely. This means:
+OrbStack routes container traffic through a macOS **Network Extension**. macOS restricts Network Extension access based on **code signing** of the process tree. When a parent process (like tmux) is **ad-hoc signed** (`flags=0x2(adhoc)`), all child processes lose access to Network Extension routes — even if the child itself is properly signed.
 
-| Method | Network layer | Works? |
-|--------|--------------|--------|
-| `curl` | Network.framework | Yes |
-| Chrome address bar | Network.framework | Yes |
-| Chrome CDP `Page.navigate` | BSD sockets | **No** |
-| Playwright (uses CDP) | BSD sockets | **No** |
-| Puppeteer (uses CDP) | BSD sockets | **No** |
-| Node.js `net.connect()` | BSD sockets | **No** |
-| Python `socket.connect()` | BSD sockets | **No** |
+This means BSD socket connections to OrbStack container IPs fail with `EHOSTUNREACH` / `ERR_ADDRESS_UNREACHABLE`, while Network.framework-based tools (curl, Chrome address bar) continue to work.
 
-This affects **all** browser automation tools (Playwright, Puppeteer, Selenium via CDP) and **all** browsers (Chromium, Firefox, WebKit) when launched by these tools.
+| Method | Network layer | Ad-hoc signed parent | Properly signed parent |
+|--------|--------------|---------------------|----------------------|
+| `curl` | Network.framework | Works | Works |
+| Chrome address bar | Network.framework | Works | Works |
+| Chrome CDP `Page.navigate` | BSD sockets | **Fails** | Works |
+| Playwright (uses CDP) | BSD sockets | **Fails** | Works |
+| Node.js `net.connect()` | BSD sockets | **Fails** | Works |
+| Python `socket.connect()` | BSD sockets | **Fails** | Works |
+
+## Preconditions to reproduce
+
+You must run the repro script from inside a terminal whose parent process is **ad-hoc signed**. The most common case is **Homebrew-installed tmux**:
+
+```bash
+# Check if tmux is ad-hoc signed:
+codesign -dvvv $(which tmux) 2>&1 | grep -E 'flags|Signature'
+# Ad-hoc will show: flags=0x2(adhoc), Signature=adhoc
+```
+
+If you run the repro from a properly signed terminal (e.g. Terminal.app or iTerm2 directly, without tmux), everything will pass.
 
 ## Prerequisites
 
@@ -24,10 +35,15 @@ This affects **all** browser automation tools (Playwright, Puppeteer, Selenium v
 - [OrbStack](https://orbstack.dev/) installed and running
 - [Node.js](https://nodejs.org/) 18+
 - Docker (via OrbStack)
+- **tmux** (Homebrew-installed, ad-hoc signed) to trigger the failure
 
 ## Reproduce
 
 ```bash
+# Start tmux (must be ad-hoc signed to trigger the bug)
+tmux
+
+# Inside tmux:
 git clone <this-repo>
 cd orbstack-playwright-repro
 npm install
@@ -36,28 +52,34 @@ bash repro.sh
 
 The script will:
 1. Start an nginx container via `docker compose`
-2. Show that `curl` can reach `https://web.orbstack-playwright-repro.local` (Network.framework)
-3. Show that Node.js TCP `connect()` to the container IP fails with `EHOSTUNREACH` (BSD sockets)
+2. Show that `curl` can reach `https://web.orbstack-playwright-repro.orb.local` (Network.framework — works)
+3. Show that Node.js TCP `connect()` to the container IP fails with `EHOSTUNREACH` (BSD sockets — fails)
 4. Run Playwright tests — they fail with `ERR_ADDRESS_UNREACHABLE`
 5. Launch Chrome manually, show the address bar loads the page, then show CDP `Page.navigate` to the same URL fails
 
-## Expected behavior
+**Running the same script outside tmux (directly in Terminal.app / iTerm2) will pass all tests.**
 
-Playwright should be able to navigate to OrbStack container domains, since the same Chrome binary can reach them via the address bar.
+## Fix
 
-## Actual behavior
+Sign tmux with your Apple Developer identity:
 
-All CDP-initiated navigation to OrbStack container IPs fails with `net::ERR_ADDRESS_UNREACHABLE`, because CDP's network path uses BSD sockets instead of macOS Network.framework.
+```bash
+# List your signing identities:
+security find-identity -v -p codesigning
 
-## Environment
+# Sign tmux (replace with your identity):
+codesign -fs "Apple Development: Your Name (XXXXXXXXXX)" /opt/homebrew/bin/tmux
 
-- macOS 15 Sequoia (Apple Silicon)
-- OrbStack 1.x / 2.x
-- Playwright 1.52+
-- Chrome / Chromium (any version)
-- Node.js 18+
+# Verify:
+codesign -dvvv /opt/homebrew/bin/tmux 2>&1 | grep -E 'Authority|Signature'
+# Should show your developer identity, not "adhoc"
+```
 
-## Workaround
+Then **restart tmux** (`tmux kill-server && tmux`) and re-run the repro — all tests will pass.
+
+> **Note:** `codesign -fs - /opt/homebrew/bin/tmux` (re-signing ad-hoc) is NOT sufficient. You need a real Apple Developer identity to get Network Extension access.
+
+## Workaround (without signing)
 
 Expose container ports to localhost via `docker-compose.override.yml`:
 
@@ -69,6 +91,8 @@ services:
 ```
 
 Then use `http://localhost:8080` instead of `https://web.project.local`.
+
+Or simply run your tests outside tmux.
 
 ## Related Issues
 
