@@ -1,0 +1,14 @@
+{
+  "name": "orbstack-playwright-repro",
+  "private": true,
+  "scripts": {
+    "test": "npx playwright test",
+    "repro": "bash repro.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

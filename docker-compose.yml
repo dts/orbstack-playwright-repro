@@ -1,0 +1,8 @@
+services:
+  web:
+    image: nginx:alpine
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost"]
+      interval: 2s
+      timeout: 2s
+      retries: 3

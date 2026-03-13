@@ -1,0 +1,7 @@
+node_modules/
+test-results/
+playwright-report/
+repro-output.txt
+repro-video.mov
+/tmp/
+test-results/
